@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>洛谷 AC 代码批量下载</title>
+<style>
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;font-size:14px;background:#f5f5f5;margin:0;padding:2rem}
+    .card{max-width:600px;margin:0 auto;background:#fff;border-radius:6px;padding:1.5rem 2rem;box-shadow:0 2px 6px rgba(0,0,0,.1)}
+    h2{margin-top:0}
+    label{display:block;margin:.8rem 0 .2rem;font-weight:600}
+    textarea,input[type=text]{width:100%;padding:.5rem;border:1px solid #bbb;border-radius:4px;resize:vertical;font-family:monospace}
+    button{margin-top:1rem;padding:.6rem 1.2rem;border:none;border-radius:4px;background:#006cff;color:#fff;font-size:14px;cursor:pointer}
+    button:disabled{background:#9bb8ff;cursor:not-allowed}
+    .tip{color:#555;font-size:12px}
+    pre{background:#f7f7f7;padding:.5rem;border-radius:4px;white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:200px;overflow:auto}
+    #log{list-style:none;padding:0;margin-top:1rem}
+    #log li{margin:.2rem 0}
+    .ok{color:green}
+    .warn{color:orange}
+    .err{color:red}
+</style>
+</head>
+<body>
+<div class="card">
+    <h2>洛谷 AC 代码批量下载</h2>
+
+    <label>用户 UID</label>
+    <input id="uid" type="text" placeholder="例如 1793617">
+
+    <label>Cookie（请从浏览器复制整段粘贴，至少包含 __client_id 和 _uid）</label>
+    <textarea id="cookie" rows="3" placeholder="__client_id=xxx; _uid=xxx;"></textarea>
+    <div class="tip">按 F12 → Application → Cookies → https://www.luogu.com.cn 复制整段即可。</div>
+
+    <button id="btn">开始抓取</button>
+    <div id="status"></div>
+
+    <ul id="log"></ul>
+</div>
+
+<!-- 引入 JSZip，用于打包下载 -->
+<script src="./jszip.js"></script>
+<script>
+/* ========= 配置 ========= */
+const LANG_EXT = {
+    1:'c',2:'cpp',28:'cpp',3:'java',4:'py',6:'php',7:'js',8:'go',9:'rs',
+    10:'hs',11:'pas',12:'rb',14:'scala',15:'cs',16:'kt',17:'swift',18:'pl',
+    19:'lua',20:'sh',21:'sql',22:'r',23:'m',24:'pl6',25:'dart',26:'asm',
+    27:'f95',29:'nim',30:'ml',31:'zig',32:'ts',33:'pas',34:'scm',35:'clj',
+    36:'jl',37:'txt'
+};
+const PER_PAGE = 20;
+
+/* ========= DOM ========= */
+const $ = sel => document.querySelector(sel);
+const uidInput = $('#uid');
+const cookieInput = $('#cookie');
+const btn = $('#btn');
+const statusDiv = $('#status');
+const logUl = $('#log');
+
+/* ========= 工具 ========= */
+function log(msg, cls='') {
+    const li = document.createElement('li');
+    li.textContent = msg;
+    if (cls) li.className = cls;
+    logUl.appendChild(li);
+    li.scrollIntoView();
+}
+
+function parseCookie(str) {
+    const obj = {};
+    str.split(';').forEach(s=>{
+        const [k,v] = s.trim().split('=');
+        if (k && v !== undefined) obj[k.trim()] = decodeURIComponent(v.trim());
+    });
+    return obj;
+}
+
+function fetchText(url, headers={}) {
+    return fetch(url, {headers}).then(r=>{
+        if (!r.ok) throw new Error('网络错误 ' + r.status);
+        return r.text();
+    });
+}
+
+/* 提取 _feInjection */
+function extractFe(html) {
+    // 先尝试官方写法
+    let m = html.match(/window\._feInjection\s*=\s*JSON\.parse\(decodeURIComponent\("([^"]+)"\)\)/s);
+    if (m) return JSON.parse(decodeURIComponent(m[1]));
+
+    // 兜底
+    m = html.match(/_feInjection\s*=\s*(\{.*?\});/s);
+    if (m) return JSON.parse(m[1]);
+    throw new Error('无法解析 _feInjection');
+}
+
+/* ========= 主流程 ========= */
+async function run() {
+    btn.disabled = true;
+    logUl.innerHTML = '';
+    statusDiv.textContent = '';
+
+    const uid = uidInput.value.trim();
+    const cookieStr = cookieInput.value.trim();
+    if (!uid || !cookieStr) return alert('请填写 UID 和 Cookie');
+
+    const cookies = parseCookie(cookieStr);
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+        'Cookie': Object.entries(cookies).map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('; ')
+    };
+
+    /* 1. 获取总页数 */
+    const firstUrl = `https://www.luogu.com.cn/record/list?user=${uid}&page=1`;
+    let html = await fetchText(firstUrl, headers);
+    let fe = extractFe(html);
+    const total = fe.currentData.records.count;
+    const totalPages = Math.ceil(total / PER_PAGE);
+    log(`共 ${total} 条记录，${totalPages} 页`, 'ok');
+
+    /* 2. 抓取所有 AC 记录 */
+    const acRecords = [];
+    for (let p=1; p<=totalPages; p++) {
+        statusDiv.textContent = `正在抓取第 ${p}/${totalPages} 页...`;
+        if (p>1) {
+            html = await fetchText(`https://www.luogu.com.cn/record/list?user=${uid}&page=${p}`, headers);
+            fe = extractFe(html);
+        }
+        const list = fe.currentData.records.result;
+        for (const rec of list) {
+            if (rec.status === 12) acRecords.push(rec);
+        }
+    }
+    log(`共 ${acRecords.length} 条 AC 记录`, 'ok');
+
+    /* 3. 抓取源码并打包 */
+    statusDiv.textContent = '正在抓取源码...';
+    const zip = new JSZip();
+    let cnt = 0;
+    for (const rec of acRecords) {
+        const rid = rec.id;
+        const pid = rec.problem.pid;
+        const lang = rec.language;
+        const ext = LANG_EXT[lang] || 'txt';
+
+        const detailUrl = `https://www.luogu.com.cn/record/${rid}`;
+        try {
+            const detailHtml = await fetchText(detailUrl, headers);
+            const fe2 = extractFe(detailHtml);
+            let code = fe2.currentData.record.sourceCode;
+            if (!code) { log(`⚠️ ${pid} 无源码，跳过`, 'warn'); continue; }
+
+            // JS 转义字符处理
+            code = code.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+            zip.file(`${pid}.${ext}`, code);
+            cnt++;
+            log(`✅ ${pid}.${ext} 已加入压缩包`);
+        } catch (e) {
+            log(`❌ ${pid} 获取失败: ${e.message}`, 'err');
+        }
+    }
+
+    if (cnt === 0) {
+        statusDiv.textContent = '未抓取到任何源码';
+        btn.disabled = false;
+        return;
+    }
+
+    /* 4. 下载 zip */
+    statusDiv.textContent = '正在生成压缩包...';
+    const blob = await zip.generateAsync({type:"blob"});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `luogu_ac_${uid}.zip`;
+    a.click();
+    statusDiv.textContent = `完成！共 ${cnt} 个文件。`;
+    btn.disabled = false;
+}
+
+btn.addEventListener('click', run);
+</script>
+</body>
+</html>
