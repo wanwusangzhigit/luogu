@@ -32,6 +32,43 @@
     <div class="tip">按 F12 → Application → Cookies → https://www.luogu.com.cn 复制整段即可。</div>
 
     <button id="btn">开始抓取</button>
+    <lable>若有跨域请求的报错，请使用node.js部署以下服务器脚本</lable>
+    <label>// server.js
+const express = require('express');
+const axios   = require('axios');
+const cors    = require('cors');
+const path    = require('path');
+
+const app = express();
+app.use(cors());                           // 允许前端跨域
+app.use(express.static(__dirname));        // 托管 index.html
+
+// 通用转发：/api/**  →  https://www.luogu.com.cn/**
+app.get('/api/*', async (req, res) => {
+    const target = 'https://www.luogu.com.cn' + req.path.replace(/^\/api/, '');
+    const cookie = req.headers.cookie || '';   // 前端会把 Cookie 带在请求头
+    try {
+        const { data } = await axios.get(target, {
+            headers: {
+                'User-Agent': req.headers['user-agent'],
+                Cookie: cookie
+            },
+            maxRedirects: 0
+        });
+        res.send(data);
+    } catch (e) {
+        res.status(500).send(e.message);
+    }
+});
+
+app.listen(3000, () => console.log('本地代理已启动: http://localhost:3000'));
+    </label>
+    <label>
+        # 命令行输入
+        npm init -y
+        npm install express cors axios
+        node server.js
+    </label>
     <div id="status"></div>
 
     <ul id="log"></ul>
